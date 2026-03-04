@@ -1,0 +1,148 @@
+Phase 2 Results — Zero-Shot kNN Baseline
+=========================================
+March 4, 2026
+
+
+Overview
+--------
+Phase 2 built and evaluated a zero-shot baseline for the student misconception
+classification task. The goal was to establish a performance floor before any
+fine-tuning, so we kept the embedding model completely frozen and relied purely
+on semantic similarity to the training set to make predictions.
+
+The dataset had 36,696 labeled student responses across 65 unique
+Category:Misconception labels. We did an 80/20 stratified split, giving us
+roughly 29,357 training examples and 7,339 validation examples. Labels with
+fewer than 2 examples were kept entirely in train to avoid empty strata.
+
+
+Approach
+--------
+We used the all-MiniLM-L6-v2 sentence transformer (384-dimensional embeddings)
+to encode every training and validation example. The model_input column — which
+concatenates the question text, the student's multiple choice answer, and their
+written explanation — was used as the input string.
+
+At inference, for each validation example we computed cosine similarity between
+its embedding and every training embedding, then grouped the similarities by
+label and took the mean per label. The top 3 labels by mean similarity were
+returned as the prediction. This is essentially a label-level nearest neighbor
+retrieval — no fine-tuning, no learned classifier, just frozen embeddings and
+dot products.
+
+Embeddings were cached to disk after the first run to avoid recomputing them.
+Training embeddings: (29357, 384). Validation embeddings: (7339, 384).
+
+
+Results
+-------
+MAP@3 (overall):    0.2004
+Rank-1 accuracy:    16.19%  (1188 / 7339 correct)
+Top-3 accuracy:     25.30%  (1857 / 7339 have true label in top 3)
+
+A MAP@3 of 0.20 is actually on the higher end of what we expected for a
+zero-shot approach — we predicted 0.10–0.25 going in. So the sentence
+embeddings are capturing some real signal even without task-specific training.
+
+
+Per-Label Breakdown
+-------------------
+The performance is extremely uneven across labels, which tells an interesting
+story about the structure of the task.
+
+Best performing labels (MAP@3 = 1.0):
+  - False_Misconception:FlipChange          (n=15)
+  - False_Misconception:Wrong_Fraction      (n=55)
+  - False_Misconception:Wrong_fraction      (n=82)
+  - False_Misconception:Tacking             (n=26)
+  - False_Misconception:Not_variable        (n=31)
+  - False_Misconception:Division            (n=12)
+  - False_Misconception:Longer_is_bigger    (n=5)
+  - True_Misconception:Firstterm            (n=2)
+  - True_Misconception:Incomplete           (n=2)
+
+These are specific, semantically distinctive misconceptions. When a student's
+explanation uses language associated with a particular named error (e.g.,
+flipping a fraction, adding denominators instead of keeping them), the
+embedding model catches it reliably even without fine-tuning.
+
+Worst performing labels:
+  - True_Correct:NA           MAP@3 = 0.0000  (n=2961 in val)
+  - True_Neither:NA           MAP@3 = 0.0000  (n=1053 in val)
+  - False_Neither:NA          MAP@3 = 0.0000  (n=1308 in val)
+  - False_Correct:NA          MAP@3 = 0.0000  (n=45 in val)
+  - True_Misconception:Duplication   MAP@3 = 0.0000  (n=1 in val)
+  - False_Misconception:Irrelevant   MAP@3 = 0.1341  (n=82)
+
+
+The "NA" Label Problem
+-----------------------
+This is the most important finding of Phase 2. The four "NA" labels —
+True_Correct, True_Neither, False_Neither, and False_Correct — represent cases
+where the student either got the question right or gave an answer that doesn't
+map to any specific named misconception. Together, these four labels account for
+5,367 out of 7,339 validation examples (73.1% of val).
+
+The model predicted exactly 0 of these correctly at any rank. It never put a
+True_Correct:NA or True_Neither:NA in its top-3 for any validation example.
+
+Why? Because the kNN baseline retrieves labels based on similarity to named
+misconceptions in the training set. The NA labels are harder to identify by
+text content alone — a correct answer doesn't consistently sound different from
+an incorrect one in terms of surface features. The model gravitates toward
+specific misconception labels because those training examples cluster tightly
+around particular phrasings, while NA examples are scattered and heterogeneous.
+
+This is a known failure mode of retrieval-based approaches on imbalanced
+datasets with catch-all categories. The baseline essentially ignores ~40% of
+the validation set (True_Correct:NA alone) because it cannot distinguish
+"correct explanation" from other explanations at the embedding level.
+
+
+Confusion Analysis
+------------------
+When the model predicts the wrong label at rank-1 (83.8% of val examples),
+it most commonly defaults to:
+  - True_Misconception:Incomplete    (606 times)
+  - False_Misconception:Wrong_Fraction  (499 times)
+  - True_Misconception:Additive      (457 times)
+  - True_Misconception:Denominator-only_change  (394 times)
+  - True_Misconception:WNB           (358 times)
+
+These are all relatively common, well-represented labels in the training set.
+The model over-predicts them because their training examples dominate the
+similarity space and pull in neighbors that don't actually belong to those
+categories.
+
+
+Summary Table (for paper)
+--------------------------
+Metric                          Value
+------------------------------  ---------------------------
+MAP@3 (overall)                 0.2004
+Rank-1 accuracy                 16.19%
+Top-3 accuracy                  25.30%
+Val set size                    7,339
+Train set size                  29,357
+Unique labels                   65
+Embedding model                 all-MiniLM-L6-v2 (frozen)
+Embedding dimension             384
+Retrieval method                Per-label mean cosine similarity (kNN)
+Labels with MAP@3 = 1.0         9 out of 65
+Labels with MAP@3 = 0.0         5 out of 65 (incl. all 4 NA classes)
+
+
+What This Means for Phase 3
+----------------------------
+The 0.2004 MAP@3 is our floor. A fine-tuned model needs to meaningfully beat
+this to justify the added complexity.
+
+The big opportunity is the NA labels. Any model that learns to recognize
+"this student is actually correct" or "this answer doesn't fit a specific
+misconception" will gain a lot, since those categories make up 73% of val.
+The specific misconception labels (e.g., Wrong_Fraction, Tacking) are already
+handled reasonably well by embeddings alone — the baseline saturates those.
+
+Phase 3 should focus on contrastive or classification fine-tuning specifically
+designed to separate the NA catch-all categories from the specific
+misconception ones, while maintaining the strong performance on the latter.

@@ -1,0 +1,12 @@
+# Generated embeddings (large binary files)
+data/train_embeddings.npy
+data/val_embeddings.npy
+data/train_labels.npy
+
+# Python
+__pycache__/
+*.pyc
+.DS_Store
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
