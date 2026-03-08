@@ -3,6 +3,9 @@ data/train_embeddings.npy
 data/val_embeddings.npy
 data/train_labels.npy
 
+# Model checkpoints (large files)
+models/
+
 # Python
 __pycache__/
 *.pyc
