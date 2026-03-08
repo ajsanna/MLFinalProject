@@ -171,22 +171,16 @@ def train(
     oversample: bool = True,
     oversample_min: int = 10,
     seed: int = 42,
+    train_df: pd.DataFrame = None,
+    val_df: pd.DataFrame = None,
+    run_name: str = None,
 ):
     """
     Main training function.
-    
-    Args:
-        data_path: Path to training data CSV
-        model_name: Name of pretrained model to fine-tune
-        output_dir: Directory to save checkpoints
-        num_epochs: Number of training epochs
-        batch_size: Training batch size
-        learning_rate: Learning rate for optimizer
-        warmup_steps: Number of warmup steps
-        val_frac: Fraction of data for validation
-        oversample: Whether to oversample rare labels
-        oversample_min: Minimum count per label when oversampling
-        seed: Random seed
+
+    If train_df and val_df are provided, uses those directly instead of
+    loading from data_path. This is useful for ablation experiments where
+    the data is pre-processed differently.
     """
     print("=" * 60)
     print("Phase 3: Fine-Tuning Bi-Encoder with Contrastive Loss")
@@ -198,16 +192,25 @@ def train(
     print(f"  Learning rate: {learning_rate}")
     print(f"  Warmup steps: {warmup_steps}")
     print(f"  Oversample: {oversample} (min={oversample_min})")
-    print(f"  Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
-    
-    # Load and split data
-    print(f"\n[1/6] Loading data from {data_path}...")
-    df = load_train(data_path)
-    print(f"  Total examples: {len(df)}")
-    print(f"  Unique labels: {df['full_label'].nunique()}")
-    
-    train_df, val_df = train_val_split(df, val_frac=val_frac, seed=seed)
-    print(f"  Train: {len(train_df)} | Val: {len(val_df)}")
+    if torch.cuda.is_available():
+        device_name = "CUDA"
+    elif torch.backends.mps.is_available():
+        device_name = "MPS (Apple Silicon)"
+    else:
+        device_name = "CPU"
+    print(f"  Device: {device_name}")
+
+    # Load and split data (or use provided DataFrames)
+    if train_df is not None and val_df is not None:
+        print(f"\n[1/6] Using provided train/val DataFrames...")
+        print(f"  Train: {len(train_df)} | Val: {len(val_df)}")
+    else:
+        print(f"\n[1/6] Loading data from {data_path}...")
+        df = load_train(data_path)
+        print(f"  Total examples: {len(df)}")
+        print(f"  Unique labels: {df['full_label'].nunique()}")
+        train_df, val_df = train_val_split(df, val_frac=val_frac, seed=seed)
+        print(f"  Train: {len(train_df)} | Val: {len(val_df)}")
     
     # Optionally oversample rare labels
     if oversample:
@@ -230,7 +233,12 @@ def train(
     
     # Initialize model
     print(f"\n[4/6] Loading base model: {model_name}...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     model = MisconceptionBiEncoder(model_name=model_name, device=device)
     base_model = model.get_base_model()
     
@@ -245,8 +253,11 @@ def train(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = output_path / f"run_{timestamp}"
+    if run_name:
+        run_dir = output_path / run_name
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = output_path / f"run_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"  Output directory: {run_dir}")
     
@@ -396,7 +407,7 @@ def train(
     print(f"\nBest model: {run_dir / 'best_model'}")
     print(f"Final model: {run_dir / 'final_model'}")
     
-    return model, history
+    return model, history, best_map
 
 
 def main():
