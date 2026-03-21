@@ -80,16 +80,18 @@ Once experiments are done:
 ```
 ├── data/               # Place downloaded data here (not tracked by git)
 ├── notebooks/
-│   ├── eda.ipynb       # Phase 1: exploratory data analysis
-│   └── baseline.ipynb  # Phase 2: zero-shot kNN baseline
+│   ├── eda.ipynb           # Phase 1: exploratory data analysis
+│   ├── baseline.ipynb      # Phase 2: zero-shot kNN baseline
+│   ├── generate_figures.py # Report figure generation
+│   └── figures/            # Generated figures for the report
 ├── src/
-│   ├── dataset.py      # Data loading, splitting, oversampling
-│   ├── model.py        # Bi-encoder wrapper and retrieval utilities
-│   ├── train.py        # Fine-tuning with contrastive loss
-│   ├── evaluate.py     # MAP@3 evaluation
-│   ├── ablation.py     # Phase 4: ablation study runner
-│   ├── error_analysis.py # Phase 5: error analysis
-│   └── utils.py        # Shared utilities
+│   ├── dataset.py          # Data loading, splitting, oversampling
+│   ├── model.py            # Bi-encoder wrapper and retrieval utilities
+│   ├── train.py            # Fine-tuning with contrastive loss
+│   ├── evaluate.py         # MAP@3 evaluation
+│   ├── ablation.py         # Ablation study runner (planned)
+│   ├── error_analysis.py   # Error analysis (planned)
+│   └── utils.py            # Shared utilities
 ├── models/             # Saved checkpoints and results (not tracked by git)
 ├── demo.py             # Interactive misconception predictor
 ├── README.md
@@ -136,7 +138,7 @@ python src/evaluate.py
 ```bash
 python demo.py
 ```
-Type a student's math explanation and optionally an answer choice — the model returns the top-3 predicted misconceptions with confidence scores. Requires the trained MPNet checkpoint in `models/ablation_model_mpnet/best_model/`.
+Type a student's math explanation and optionally an answer choice — the model returns the top-3 predicted misconceptions with confidence scores. The demo automatically loads the most recently trained checkpoint under `models/`. Run step 4 first if you haven't trained yet.
 
 ---
 
@@ -164,114 +166,34 @@ Key libraries (full list in `requirements.txt`):
 
 Using a frozen `all-MiniLM-L6-v2` encoder with no fine-tuning, we encode both student inputs and misconception label strings into the same embedding space and retrieve the top-3 nearest labels by cosine similarity.
 
-| Model | Fine-tuned | MAP@3 |
-|---|---|---|
-| all-MiniLM-L6-v2 | No | 0.0118 |
+| Model | Fine-tuned | MAP@3 | Top-1 Accuracy | Top-3 Accuracy |
+|---|---|---|---|---|
+| all-MiniLM-L6-v2 | No | 0.2004 | 16.19% | 25.30% |
 
-The near-zero score confirms that off-the-shelf embeddings can't solve this task — the label strings alone don't carry enough semantic overlap with student explanations to be useful without training.
+A MAP@3 of 0.20 shows that frozen sentence embeddings capture real signal — the model correctly identifies named misconceptions that have distinctive language patterns. However, it scores 0.00 on the four NA labels (True_Correct, True_Neither, False_Neither, False_Correct) which together account for 73% of the validation set, dragging overall performance down significantly.
 
 ### Phase 3 — Fine-Tuned Bi-Encoder
 
-We fine-tuned `all-MiniLM-L6-v2` using `MultipleNegativesRankingLoss` for 4 epochs on an 80/20 stratified split (~29.5k train / ~7.3k val). Rare labels (< 10 examples) were oversampled to a minimum count of 10.
+We fine-tuned `all-MiniLM-L6-v2` using `MultipleNegativesRankingLoss` on an 80/20 stratified split (29,511 train / 7,339 val). Rare labels (< 10 examples) were oversampled to a minimum of 10. Training ran for 2 epochs (~22 minutes on CPU); the best checkpoint was saved at epoch 1.
 
 | Epoch | Validation MAP@3 |
 |---|---|
-| 1 | 0.6252 |
-| 2 | 0.6113 |
-| 3 | 0.6755 |
-| 4 | **0.6858** |
+| 0 (zero-shot baseline) | 0.2004 |
+| 1 | **0.6073** |
+| 2 | 0.5902 |
 
-Fine-tuning takes MAP@3 from 0.01 to 0.69 — a massive jump that shows contrastive learning is highly effective for this retrieval task.
+Fine-tuning delivers a 203% improvement over the zero-shot baseline. The drop at epoch 2 indicates mild overfitting, confirming that saving the best validation checkpoint rather than the final weights is the right strategy.
 
-### Phase 4 — Ablation Studies
+**NA label breakthrough:** The most significant finding is that the fine-tuned model learned to classify the four NA labels that the zero-shot baseline missed entirely.
 
-All ablation experiments use the same train/val split and training setup (4 epochs, batch size 16, lr 2e-5) so results are directly comparable.
+| Label | Val Examples | Phase 2 MAP@3 | Phase 3 MAP@3 |
+|---|---|---|---|
+| True_Correct:NA | 2,961 | 0.0000 | 0.5669 |
+| True_Neither:NA | 1,053 | 0.0000 | 0.4525 |
+| False_Neither:NA | 1,308 | 0.0000 | 0.3292 |
+| False_Correct:NA | 45 | 0.0000 | 0.3074 |
 
-**Study 1: Input Ablation** — Which parts of the student input matter?
-
-| Input Format | MAP@3 |
-|---|---|
-| Answer + Explanation | **0.7024** |
-| Question + Answer + Explanation (full) | 0.6758 |
-| Question + Explanation | 0.6148 |
-| Explanation only | 0.5847 |
-
-The answer choice is the most informative signal beyond the explanation itself. Including the question text actually hurts slightly — it likely adds noise (long question strings with LaTeX) without adding much discriminative information.
-
-**Study 2: Model Size** — Does a bigger encoder help?
-
-| Encoder | Parameters | MAP@3 |
-|---|---|---|
-| all-mpnet-base-v2 | 109M | **0.8131** |
-| all-MiniLM-L6-v2 | 22M | 0.6758 |
-
-Yes, significantly. MPNet-base improves MAP@3 by +0.14 over MiniLM, suggesting the task benefits from higher model capacity.
-
-**Study 3: Fine-Tuning vs. Frozen**
-
-| Condition | MAP@3 |
-|---|---|
-| Fine-tuned (MiniLM) | **0.6758** |
-| Frozen (MiniLM, zero-shot) | 0.0118 |
-
-Fine-tuning is essential. Pre-trained embeddings are effectively useless for this task without contrastive adaptation.
-
-**Study 4: Training Data Size** — How much data do we need?
-
-| Fraction of Training Data | MAP@3 |
-|---|---|
-| 100% (~29.5k) | 0.6758 |
-| 75% (~22k) | 0.6797 |
-| 50% (~14.7k) | 0.6496 |
-| 25% (~7.4k) | 0.6494 |
-
-Performance is surprisingly robust to data reduction. Even 25% of the data reaches MAP@3 ~0.65, and gains plateau quickly after 50%. This suggests the model learns the core label distinctions early, and most additional data provides diminishing returns.
-
-### Phase 5 — Error Analysis
-
-We ran a detailed error analysis on our best model (MPNet-base, MAP@3 = 0.8131) to understand where and why it fails. All analysis was performed on the same held-out validation set (7,339 examples).
-
-**Overall accuracy:**
-
-| Metric | Value |
-|---|---|
-| MAP@3 | 0.8131 |
-| Top-1 accuracy | 72.0% |
-| Top-3 accuracy | 92.9% |
-
-The model gets the right label somewhere in its top 3 for nearly 93% of examples, but only ranks it first 72% of the time.
-
-**Category-level confusion:**
-
-The dataset has 6 top-level categories (`True_Correct`, `False_Misconception`, `False_Neither`, etc.). When the model makes an error, **92.5% of the time it predicts a label from a different category** — meaning most mistakes aren't near-misses between similar misconceptions, they're category-level misclassifications.
-
-The two dominant confusion patterns are:
-- **True_Correct vs. True_Misconception** — the model sometimes "invents" a misconception for a student who actually answered correctly (606 cases). This is the single largest source of errors.
-- **False_Neither vs. False_Misconception** — similarly, the model assigns a specific misconception label to responses that evaluators marked as wrong-but-not-a-known-misconception (676 cases).
-
-In both cases, the model is over-diagnosing misconceptions. It picks up on surface-level cues (e.g., a student mentioning "subtraction") and maps them to a named misconception even when the ground truth says otherwise.
-
-**Most confused label pairs:**
-
-| True Label | Predicted Label | Count |
-|---|---|---|
-| True_Correct:NA | True_Misconception:Incomplete | 124 |
-| True_Neither:NA | True_Correct:NA | 119 |
-| True_Correct:NA | True_Neither:NA | 111 |
-| False_Misconception:Wrong_fraction | False_Misconception:Wrong_Fraction | 82 |
-| True_Correct:NA | True_Misconception:Positive | 80 |
-
-The 4th row (`Wrong_fraction` vs `Wrong_Fraction`) is a casing inconsistency in the dataset, not a real model error — this accounts for 82 "mistakes" that are actually correct predictions penalized by a data cleaning artifact.
-
-**Per-label performance:**
-
-Labels with clear, distinctive misconception descriptions (e.g., `Firstterm`, `Division`, `Unknowable`) achieve perfect MAP@3 = 1.0. The hardest labels are the vague catch-all categories — `False_Neither:NA` (MAP@3 = 0.627) and `True_Neither:NA` (MAP@3 = 0.718) — which lack a concrete misconception description for the encoder to match against.
-
-**Qualitative failure patterns:**
-
-The model's highest-confidence wrong predictions are consistently cases where a student describes a mathematically valid operation but the ground truth labels it as `False_Neither` rather than a named misconception. For example, several students clearly describe a subtraction procedure and the model confidently predicts `False_Misconception:Subtraction`, but the gold label is `False_Neither:NA`. These are arguably labeling ambiguities rather than model failures — the boundary between "neither" and a named misconception is subjective.
-
-Full error analysis outputs (confusion matrices, per-label breakdowns, example failures) are saved in `models/error_analysis/`.
+Across all 65 labels, 14 achieved a perfect MAP@3 = 1.0 and 48 of 65 exceeded MAP@3 = 0.80. The only label to score 0.0 after fine-tuning was `False_Misconception:Wrong_Operation` (n=5 in validation — too few examples to learn from).
 
 ---
 
